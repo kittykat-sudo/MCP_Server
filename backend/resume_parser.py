@@ -243,8 +243,8 @@ University of Technology (2014-2018)
 SKILLS
 Python, JavaScript, React, FastAPI, Docker, AWS, Git""",
         "extracted_info": {
-            "name": "John Doe",
-            "email": "john.doe@email.com", 
+            "name": "Theekshana Dissanayake",
+            "email": "theesh.subarangi@gmail.com", 
             "phone": "(555) 123-4567",
             "skills": ["Python", "JavaScript", "React", "FastAPI", "Docker", "AWS", "Git"],
             "experience": [
