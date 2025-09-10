@@ -3,34 +3,34 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import openai
+from openai import OpenAI 
 from dotenv import load_dotenv
 import json
 from email_sender import send_email
-from resume_parser import parse_resume_file, load_resume_context
+from resume_parser import parse_resume_file, load_resume_context, get_sample_resume_data
 
-# Load environment variables
+# load environment variables
 load_dotenv()
 
 app = FastAPI(
-    title="MCP Server - CV Chat & Email",
+    title="MCP Server - CV Chat & Email API",
     description="AI-powered chat about your CV with email notification capabilities",
     version="1.0.0"
 )
 
-# Configure CORS
+# Config Cors
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your frontend domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize OpenAI client
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# initialize openai Client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Global variable to store resume context
+# Global variable for resume content
 resume_context = ""
 
 # Pydantic models
@@ -48,27 +48,30 @@ class ChatResponse(BaseModel):
     conversation_id: str
     function_call: Optional[dict] = None
 
-# Function definitions for OpenAI function calling
+# Function definitions for OpenAI function calling(updated)
 email_function = {
-    "name": "send_email",
-    "description": "Send an email to a recipient",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "recipient": {
-                "type": "string",
-                "description": "Email address of the recipient"
+    "type": "function",
+    "function": {
+        "name": "send_email",
+        "description": "Send an email to a recipient",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "recipient": {
+                    "type": "string",
+                    "description": "Email address of the recipient"
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Email subject line"
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Email body content"
+                }
             },
-            "subject": {
-                "type": "string",
-                "description": "Email subject line"
-            },
-            "body": {
-                "type": "string",
-                "description": "Email body content"
-            }
-        },
-        "required": ["recipient", "subject", "body"]
+            "required": ["recipient", "subject", "body"]
+        }
     }
 }
 
@@ -111,6 +114,10 @@ async def upload_resume(file: UploadFile = File(...)):
 async def chat_with_cv(chat_request: ChatMessage):
     """Chat with AI about your CV"""
     try:
+        global resume_context
+        if not resume_context:
+            sample_data = get_sample_resume_data()
+            resume_context = load_resume_context(sample_data)
         # System prompt with resume context
         system_prompt = f"""You are an AI assistant that helps people discuss their CV/resume. 
         You have access to the following resume information:
@@ -127,11 +134,12 @@ async def chat_with_cv(chat_request: ChatMessage):
         ]
         
         # Make OpenAI API call with function calling
-        response = openai.chat.completions.create(
+        response = client.chat.completions.create(
             model="gpt-4",
             messages=messages,
-            functions=[email_function],
-            function_call="auto",
+            tools=[email_function],
+            tool_choice="auto",
+            # functions=[email_function],
             temperature=0.7,
             max_tokens=1000
         )
@@ -170,6 +178,10 @@ async def chat_with_cv(chat_request: ChatMessage):
         )
         
     except Exception as e:
+        #better error logging
+        import traceback
+        print(f"Chat error: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error in chat: {str(e)}")
 
 @app.post("/send-email")
