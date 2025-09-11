@@ -14,7 +14,7 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
-from email_sender import send_email
+from backend.email_sender_huge import send_email
 from resume_parser import parse_resume_file, load_resume_context, get_sample_resume_data
 
 # Load environment variables
