@@ -7,12 +7,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 # AI Provider imports
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-
+from openai import OpenAI
 try:
     import google.generativeai as genai
     GEMINI_AVAILABLE = True
@@ -20,7 +15,7 @@ except ImportError:
     GEMINI_AVAILABLE = False
 
 from email_sender import send_email
-from resume_parser_simple import parse_resume_file, load_resume_context, get_sample_resume_data
+from resume_parser import parse_resume_file, load_resume_context, get_sample_resume_data
 
 # Load environment variables
 load_dotenv()
@@ -36,7 +31,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",  # Local development
-        "https://mcp-server-virid.vercel.app",  # Your Vercel domain
+        "https://mcp-server-virid.vercel.app",  # Your correct Vercel domain
         "https://*.vercel.app",  # All Vercel domains
     ],
     allow_credentials=True,
@@ -50,7 +45,7 @@ openai_client = None
 gemini_model = None
 
 # Initialize OpenAI (backup)
-if OPENAI_AVAILABLE and os.getenv("OPENAI_API_KEY"):
+if os.getenv("OPENAI_API_KEY"):
     openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Initialize Gemini (primary free option)
@@ -118,11 +113,24 @@ class AIProvider:
     @staticmethod
     def _generate_fallback_response(message: str) -> str:
         """Generate basic response when no AI provider is available"""
-        return """🤖 **AI Provider Configuration Needed**
+        message_lower = message.lower()
         
-To get AI-powered responses, please configure an AI provider in your environment variables:
+        if any(word in message_lower for word in ['experience', 'work', 'job']):
+            return "I can see your work experience in the uploaded resume. For detailed AI analysis, please configure an AI provider (Gemini or OpenAI) in your environment variables."
+        
+        elif any(word in message_lower for word in ['skills', 'technical']):
+            return "Your technical skills are listed in your resume. For AI-powered insights, please set up an AI provider."
+        
+        elif any(word in message_lower for word in ['education', 'degree']):
+            return "Your education information is available in your resume. AI analysis requires an API key."
+        
+        else:
+            return """🤖 **AI Provider Configuration Needed**
+            
+To get AI-powered responses, please:
 1. **For Gemini (FREE)**: Get key from https://makersuite.google.com/app/apikey
 2. **For OpenAI**: Add billing at https://platform.openai.com/account/billing
+3. Add your API key to the .env file
 
 Currently showing basic resume information only."""
 
@@ -148,8 +156,7 @@ async def root():
         "status": "running",
         "ai_provider": AI_PROVIDER,
         "gemini_available": GEMINI_AVAILABLE and bool(os.getenv("GEMINI_API_KEY")),
-        "openai_available": OPENAI_AVAILABLE and bool(os.getenv("OPENAI_API_KEY")),
-        "platform": "Render"
+        "openai_available": bool(os.getenv("OPENAI_API_KEY"))
     }
 
 @app.get("/health")
@@ -166,20 +173,27 @@ async def health_check():
 
 @app.post("/upload-resume")
 async def upload_resume(file: UploadFile = File(...)):
-    """Upload and parse a resume file - simplified version"""
+    """Upload and parse a resume file (PDF, DOCX)"""
     global resume_context
     
     try:
-        # For now, use sample data
-        # In production, integrate with cloud parsing services
-        parsed_data = get_sample_resume_data()
+        # Save uploaded file temporarily
+        file_path = f"temp_{file.filename}"
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        # Parse the resume
+        parsed_data = parse_resume_file(file_path)
         resume_context = load_resume_context(parsed_data)
         
+        # Clean up temp file
+        os.remove(file_path)
+        
         return {
-            "message": "Resume processed successfully (using sample data for demo)",
+            "message": "Resume uploaded and parsed successfully",
             "filename": file.filename,
-            "parsed_data": parsed_data,
-            "note": "Full PDF parsing will be added in future updates"
+            "parsed_data": parsed_data
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing resume: {str(e)}")
@@ -193,6 +207,7 @@ async def chat_with_cv(chat_request: ChatMessage):
             sample_data = get_sample_resume_data()
             resume_context = load_resume_context(sample_data)
         
+        # System prompt with resume context
         system_prompt = f"""You are an AI assistant that helps people discuss their CV/resume. 
         You have access to the following resume information:
         
@@ -200,8 +215,11 @@ async def chat_with_cv(chat_request: ChatMessage):
         
         You can also help with career advice and answer questions about the resume.
         Be helpful, professional, and knowledgeable about career-related topics.
+        
+        If the user asks about sending emails, let them know they can use the separate email endpoint.
         """
         
+        # Generate response using configured AI provider
         ai_response = AIProvider.generate_response(chat_request.message, system_prompt)
         
         return ChatResponse(
