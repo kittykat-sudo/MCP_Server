@@ -1,16 +1,17 @@
-# Core FastAPI dependencies (pure Python)
+# Core FastAPI with pre-compiled wheels only
 fastapi==0.104.1
 uvicorn==0.24.0
 python-multipart==0.0.6
 python-dotenv==1.0.0
-pydantic==2.5.0
 
-# AI and Email dependencies (pure Python)
+# Use older Pydantic version with pre-compiled wheels
+pydantic==2.4.2
+
+# AI and Email dependencies
 google-generativeai==0.3.0
 sendgrid==6.10.0
 httpx==0.25.2
 
-# Remove problematic packages:
-# - PyMuPDF (requires C++ compilation)
-# - python-docx (heavy dependencies)
-# - openai (can cause issues with some versions)
+# Additional required dependencies
+starlette==0.27.0
+typing-extensions==4.8.0

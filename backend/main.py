@@ -1,9 +1,8 @@
 import os
 import json
-from typing import Optional
+from typing import Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from dotenv import load_dotenv
 
 # Simplified AI Provider imports - only Gemini for now
@@ -13,7 +12,7 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
-from backend.email_sender_huge import send_email
+from email_sender import send_email
 
 # Load environment variables
 load_dotenv()
@@ -49,7 +48,7 @@ if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
 # Global variable for resume content
 resume_context = ""
 
-def get_sample_resume_data():
+def get_sample_resume_data() -> Dict[str, Any]:
     """Sample resume data for demonstration"""
     return {
         "personal_info": {
@@ -66,7 +65,7 @@ def get_sample_resume_data():
                 "description": "Led development of scalable web applications using Python and React"
             },
             {
-                "title": "Software Engineer",
+                "title": "Software Engineer", 
                 "company": "StartupXYZ",
                 "duration": "2019-2021",
                 "description": "Developed REST APIs and microservices"
@@ -89,14 +88,14 @@ def get_sample_resume_data():
         ]
     }
 
-def load_resume_context(parsed_data):
+def load_resume_context(parsed_data: Dict[str, Any]) -> str:
     """Convert parsed resume data to context string"""
     context_parts = []
     
     # Personal information
     if "personal_info" in parsed_data:
         personal = parsed_data["personal_info"]
-        context_parts.append(f"**Personal Information:**")
+        context_parts.append("**Personal Information:**")
         context_parts.append(f"Name: {personal.get('name', 'N/A')}")
         context_parts.append(f"Email: {personal.get('email', 'N/A')}")
         context_parts.append(f"Phone: {personal.get('phone', 'N/A')}")
@@ -175,20 +174,7 @@ To get AI-powered responses, please configure an AI provider in your environment
 
 Currently showing basic resume information only."""
 
-# Pydantic models
-class ChatMessage(BaseModel):
-    message: str
-    conversation_id: Optional[str] = None
-
-class EmailRequest(BaseModel):
-    recipient: str
-    subject: str
-    body: str
-
-class ChatResponse(BaseModel):
-    response: str
-    conversation_id: str
-    function_call: Optional[dict] = None
+# API endpoints without Pydantic models - using basic dict/JSON
 
 @app.get("/")
 async def root():
@@ -198,7 +184,7 @@ async def root():
         "ai_provider": AI_PROVIDER,
         "gemini_available": GEMINI_AVAILABLE and bool(os.getenv("GEMINI_API_KEY")),
         "platform": "Render",
-        "version": "minimal"
+        "version": "minimal-no-pydantic"
     }
 
 @app.get("/health")
@@ -217,7 +203,6 @@ async def upload_resume(file: UploadFile = File(...)):
     
     try:
         # For now, use sample data
-        # In production, integrate with cloud parsing services
         parsed_data = get_sample_resume_data()
         resume_context = load_resume_context(parsed_data)
         
@@ -230,11 +215,19 @@ async def upload_resume(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing resume: {str(e)}")
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat_with_cv(chat_request: ChatMessage):
+@app.post("/chat")
+async def chat_with_cv(request: Dict[str, Any]):
     """Chat with AI about your CV"""
     try:
         global resume_context
+        
+        # Extract message from request
+        message = request.get("message", "")
+        conversation_id = request.get("conversation_id", "default")
+        
+        if not message:
+            raise HTTPException(status_code=400, detail="Message is required")
+        
         if not resume_context:
             sample_data = get_sample_resume_data()
             resume_context = load_resume_context(sample_data)
@@ -248,13 +241,13 @@ async def chat_with_cv(chat_request: ChatMessage):
         Be helpful, professional, and knowledgeable about career-related topics.
         """
         
-        ai_response = AIProvider.generate_response(chat_request.message, system_prompt)
+        ai_response = AIProvider.generate_response(message, system_prompt)
         
-        return ChatResponse(
-            response=ai_response,
-            conversation_id=chat_request.conversation_id or "default",
-            function_call=None
-        )
+        return {
+            "response": ai_response,
+            "conversation_id": conversation_id,
+            "function_call": None
+        }
         
     except Exception as e:
         import traceback
@@ -263,14 +256,17 @@ async def chat_with_cv(chat_request: ChatMessage):
         raise HTTPException(status_code=500, detail=f"Error in chat: {str(e)}")
 
 @app.post("/send-email")
-async def send_email_endpoint(email_request: EmailRequest):
+async def send_email_endpoint(request: Dict[str, Any]):
     """Send an email notification"""
     try:
-        result = send_email(
-            email_request.recipient,
-            email_request.subject,
-            email_request.body
-        )
+        recipient = request.get("recipient")
+        subject = request.get("subject")
+        body = request.get("body")
+        
+        if not all([recipient, subject, body]):
+            raise HTTPException(status_code=400, detail="recipient, subject, and body are required")
+        
+        result = send_email(recipient, subject, body)
         return {"message": "Email sent successfully", "result": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error sending email: {str(e)}")
