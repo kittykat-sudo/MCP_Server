@@ -6,21 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# AI Provider imports
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-
+# Simplified AI Provider imports - only Gemini for now
 try:
     import google.generativeai as genai
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
 
-from email_sender import send_email
-from resume_parser_simple import parse_resume_file, load_resume_context, get_sample_resume_data
+from backend.email_sender_huge import send_email
 
 # Load environment variables
 load_dotenv()
@@ -46,12 +39,7 @@ app.add_middleware(
 
 # Initialize AI clients
 AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini").lower()
-openai_client = None
 gemini_model = None
-
-# Initialize OpenAI (backup)
-if OPENAI_AVAILABLE and os.getenv("OPENAI_API_KEY"):
-    openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Initialize Gemini (primary free option)
 if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
@@ -60,6 +48,90 @@ if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
 
 # Global variable for resume content
 resume_context = ""
+
+def get_sample_resume_data():
+    """Sample resume data for demonstration"""
+    return {
+        "personal_info": {
+            "name": "John Doe",
+            "email": "john.doe@email.com",
+            "phone": "+1 (555) 123-4567",
+            "location": "San Francisco, CA"
+        },
+        "experience": [
+            {
+                "title": "Senior Software Engineer",
+                "company": "Tech Corp",
+                "duration": "2021-2024",
+                "description": "Led development of scalable web applications using Python and React"
+            },
+            {
+                "title": "Software Engineer",
+                "company": "StartupXYZ",
+                "duration": "2019-2021",
+                "description": "Developed REST APIs and microservices"
+            }
+        ],
+        "education": [
+            {
+                "degree": "Bachelor of Science in Computer Science",
+                "institution": "University of Technology",
+                "graduation_year": "2019"
+            }
+        ],
+        "skills": [
+            "Python", "JavaScript", "React", "FastAPI", "PostgreSQL", 
+            "Docker", "AWS", "Git", "REST APIs", "Microservices"
+        ],
+        "certifications": [
+            "AWS Certified Developer",
+            "Google Cloud Professional"
+        ]
+    }
+
+def load_resume_context(parsed_data):
+    """Convert parsed resume data to context string"""
+    context_parts = []
+    
+    # Personal information
+    if "personal_info" in parsed_data:
+        personal = parsed_data["personal_info"]
+        context_parts.append(f"**Personal Information:**")
+        context_parts.append(f"Name: {personal.get('name', 'N/A')}")
+        context_parts.append(f"Email: {personal.get('email', 'N/A')}")
+        context_parts.append(f"Phone: {personal.get('phone', 'N/A')}")
+        context_parts.append(f"Location: {personal.get('location', 'N/A')}")
+        context_parts.append("")
+    
+    # Experience
+    if "experience" in parsed_data and parsed_data["experience"]:
+        context_parts.append("**Work Experience:**")
+        for exp in parsed_data["experience"]:
+            context_parts.append(f"• {exp.get('title', 'N/A')} at {exp.get('company', 'N/A')} ({exp.get('duration', 'N/A')})")
+            context_parts.append(f"  {exp.get('description', 'N/A')}")
+        context_parts.append("")
+    
+    # Education
+    if "education" in parsed_data and parsed_data["education"]:
+        context_parts.append("**Education:**")
+        for edu in parsed_data["education"]:
+            context_parts.append(f"• {edu.get('degree', 'N/A')} from {edu.get('institution', 'N/A')} ({edu.get('graduation_year', 'N/A')})")
+        context_parts.append("")
+    
+    # Skills
+    if "skills" in parsed_data and parsed_data["skills"]:
+        context_parts.append("**Technical Skills:**")
+        context_parts.append(f"• {', '.join(parsed_data['skills'])}")
+        context_parts.append("")
+    
+    # Certifications
+    if "certifications" in parsed_data and parsed_data["certifications"]:
+        context_parts.append("**Certifications:**")
+        for cert in parsed_data["certifications"]:
+            context_parts.append(f"• {cert}")
+        context_parts.append("")
+    
+    return "\n".join(context_parts)
 
 class AIProvider:
     """Unified AI provider interface"""
@@ -70,8 +142,6 @@ class AIProvider:
         
         if AI_PROVIDER == "gemini" and gemini_model:
             return AIProvider._generate_gemini_response(message, system_prompt)
-        elif AI_PROVIDER == "openai" and openai_client:
-            return AIProvider._generate_openai_response(message, system_prompt)
         else:
             return AIProvider._generate_fallback_response(message)
     
@@ -96,33 +166,12 @@ class AIProvider:
             return f"Sorry, I'm experiencing technical difficulties with Gemini API. Error: {str(e)}"
     
     @staticmethod
-    def _generate_openai_response(message: str, system_prompt: str) -> str:
-        """Generate response using OpenAI (fallback)"""
-        try:
-            response = openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": message}
-                ],
-                temperature=0.7,
-                max_tokens=1000
-            )
-            
-            return response.choices[0].message.content
-            
-        except Exception as e:
-            print(f"OpenAI error: {e}")
-            return f"Sorry, I'm experiencing technical difficulties with OpenAI API. Error: {str(e)}"
-    
-    @staticmethod
     def _generate_fallback_response(message: str) -> str:
         """Generate basic response when no AI provider is available"""
         return """🤖 **AI Provider Configuration Needed**
         
 To get AI-powered responses, please configure an AI provider in your environment variables:
 1. **For Gemini (FREE)**: Get key from https://makersuite.google.com/app/apikey
-2. **For OpenAI**: Add billing at https://platform.openai.com/account/billing
 
 Currently showing basic resume information only."""
 
@@ -148,8 +197,8 @@ async def root():
         "status": "running",
         "ai_provider": AI_PROVIDER,
         "gemini_available": GEMINI_AVAILABLE and bool(os.getenv("GEMINI_API_KEY")),
-        "openai_available": OPENAI_AVAILABLE and bool(os.getenv("OPENAI_API_KEY")),
-        "platform": "Render"
+        "platform": "Render",
+        "version": "minimal"
     }
 
 @app.get("/health")
@@ -158,10 +207,7 @@ async def health_check():
         "status": "healthy", 
         "resume_loaded": bool(resume_context),
         "ai_provider": AI_PROVIDER,
-        "ai_configured": bool(
-            (AI_PROVIDER == "gemini" and gemini_model) or 
-            (AI_PROVIDER == "openai" and openai_client)
-        )
+        "ai_configured": bool(AI_PROVIDER == "gemini" and gemini_model)
     }
 
 @app.post("/upload-resume")
