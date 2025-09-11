@@ -1,19 +1,27 @@
 import os
-from typing import List, Optional
+import json
+from typing import Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import openai
 from dotenv import load_dotenv
-import json
+
+# AI Provider imports
+from openai import OpenAI
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
 from email_sender import send_email
-from resume_parser import parse_resume_file, load_resume_context
+from resume_parser import parse_resume_file, load_resume_context, get_sample_resume_data
 
 # Load environment variables
 load_dotenv()
 
 app = FastAPI(
-    title="MCP Server - CV Chat & Email",
+    title="MCP Server - CV Chat & Email API",
     description="AI-powered chat about your CV with email notification capabilities",
     version="1.0.0"
 )
@@ -21,17 +29,106 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your frontend domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize OpenAI client
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Initialize AI clients
+AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini").lower()
+openai_client = None
+gemini_model = None
 
-# Global variable to store resume context
+# Initialize OpenAI (backup)
+if os.getenv("OPENAI_API_KEY"):
+    openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Initialize Gemini (primary free option)
+if GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY"):
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+
+# Global variable for resume content
 resume_context = ""
+
+class AIProvider:
+    """Unified AI provider interface"""
+    
+    @staticmethod
+    def generate_response(message: str, system_prompt: str) -> str:
+        """Generate response using available AI provider"""
+        
+        if AI_PROVIDER == "gemini" and gemini_model:
+            return AIProvider._generate_gemini_response(message, system_prompt)
+        elif AI_PROVIDER == "openai" and openai_client:
+            return AIProvider._generate_openai_response(message, system_prompt)
+        else:
+            return AIProvider._generate_fallback_response(message)
+    
+    @staticmethod
+    def _generate_gemini_response(message: str, system_prompt: str) -> str:
+        """Generate response using Google Gemini"""
+        try:
+            full_prompt = f"{system_prompt}\n\nUser: {message}\nAssistant:"
+            
+            response = gemini_model.generate_content(
+                full_prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.7,
+                    max_output_tokens=1000,
+                )
+            )
+            
+            return response.text
+            
+        except Exception as e:
+            print(f"Gemini error: {e}")
+            return f"Sorry, I'm experiencing technical difficulties with Gemini API. Error: {str(e)}"
+    
+    @staticmethod
+    def _generate_openai_response(message: str, system_prompt: str) -> str:
+        """Generate response using OpenAI (fallback)"""
+        try:
+            response = openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": message}
+                ],
+                temperature=0.7,
+                max_tokens=1000
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            print(f"OpenAI error: {e}")
+            return f"Sorry, I'm experiencing technical difficulties with OpenAI API. Error: {str(e)}"
+    
+    @staticmethod
+    def _generate_fallback_response(message: str) -> str:
+        """Generate basic response when no AI provider is available"""
+        message_lower = message.lower()
+        
+        if any(word in message_lower for word in ['experience', 'work', 'job']):
+            return "I can see your work experience in the uploaded resume. For detailed AI analysis, please configure an AI provider (Gemini or OpenAI) in your environment variables."
+        
+        elif any(word in message_lower for word in ['skills', 'technical']):
+            return "Your technical skills are listed in your resume. For AI-powered insights, please set up an AI provider."
+        
+        elif any(word in message_lower for word in ['education', 'degree']):
+            return "Your education information is available in your resume. AI analysis requires an API key."
+        
+        else:
+            return """🤖 **AI Provider Configuration Needed**
+            
+To get AI-powered responses, please:
+1. **For Gemini (FREE)**: Get key from https://makersuite.google.com/app/apikey
+2. **For OpenAI**: Add billing at https://platform.openai.com/account/billing
+3. Add your API key to the .env file
+
+Currently showing basic resume information only."""
 
 # Pydantic models
 class ChatMessage(BaseModel):
@@ -48,37 +145,27 @@ class ChatResponse(BaseModel):
     conversation_id: str
     function_call: Optional[dict] = None
 
-# Function definitions for OpenAI function calling
-email_function = {
-    "name": "send_email",
-    "description": "Send an email to a recipient",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "recipient": {
-                "type": "string",
-                "description": "Email address of the recipient"
-            },
-            "subject": {
-                "type": "string",
-                "description": "Email subject line"
-            },
-            "body": {
-                "type": "string",
-                "description": "Email body content"
-            }
-        },
-        "required": ["recipient", "subject", "body"]
-    }
-}
-
 @app.get("/")
 async def root():
-    return {"message": "MCP Server - CV Chat & Email API", "status": "running"}
+    return {
+        "message": "MCP Server - CV Chat & Email API", 
+        "status": "running",
+        "ai_provider": AI_PROVIDER,
+        "gemini_available": GEMINI_AVAILABLE and bool(os.getenv("GEMINI_API_KEY")),
+        "openai_available": bool(os.getenv("OPENAI_API_KEY"))
+    }
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "resume_loaded": bool(resume_context)}
+    return {
+        "status": "healthy", 
+        "resume_loaded": bool(resume_context),
+        "ai_provider": AI_PROVIDER,
+        "ai_configured": bool(
+            (AI_PROVIDER == "gemini" and gemini_model) or 
+            (AI_PROVIDER == "openai" and openai_client)
+        )
+    }
 
 @app.post("/upload-resume")
 async def upload_resume(file: UploadFile = File(...)):
@@ -111,65 +198,36 @@ async def upload_resume(file: UploadFile = File(...)):
 async def chat_with_cv(chat_request: ChatMessage):
     """Chat with AI about your CV"""
     try:
+        global resume_context
+        if not resume_context:
+            sample_data = get_sample_resume_data()
+            resume_context = load_resume_context(sample_data)
+        
         # System prompt with resume context
         system_prompt = f"""You are an AI assistant that helps people discuss their CV/resume. 
         You have access to the following resume information:
         
         {resume_context}
         
-        You can also send emails when requested. Use the send_email function when the user asks you to send an email.
+        You can also help with career advice and answer questions about the resume.
         Be helpful, professional, and knowledgeable about career-related topics.
+        
+        If the user asks about sending emails, let them know they can use the separate email endpoint.
         """
         
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": chat_request.message}
-        ]
-        
-        # Make OpenAI API call with function calling
-        response = openai.chat.completions.create(
-            model="gpt-4",
-            messages=messages,
-            functions=[email_function],
-            function_call="auto",
-            temperature=0.7,
-            max_tokens=1000
-        )
-        
-        message = response.choices[0].message
-        
-        # Check if function call was made
-        function_call_result = None
-        if message.function_call:
-            function_name = message.function_call.name
-            function_args = json.loads(message.function_call.arguments)
-            
-            if function_name == "send_email":
-                try:
-                    email_result = send_email(
-                        function_args["recipient"],
-                        function_args["subject"],
-                        function_args["body"]
-                    )
-                    function_call_result = {
-                        "function": "send_email",
-                        "result": email_result,
-                        "args": function_args
-                    }
-                except Exception as e:
-                    function_call_result = {
-                        "function": "send_email",
-                        "result": f"Error sending email: {str(e)}",
-                        "args": function_args
-                    }
+        # Generate response using configured AI provider
+        ai_response = AIProvider.generate_response(chat_request.message, system_prompt)
         
         return ChatResponse(
-            response=message.content or "Function called successfully",
+            response=ai_response,
             conversation_id=chat_request.conversation_id or "default",
-            function_call=function_call_result
+            function_call=None
         )
         
     except Exception as e:
+        import traceback
+        print(f"Chat error: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error in chat: {str(e)}")
 
 @app.post("/send-email")
